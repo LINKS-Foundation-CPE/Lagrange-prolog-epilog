@@ -1,0 +1,23 @@
+# Compose override for the slurm-docker-compose test bed: installs the QPU token
+# scripts the way the README says to, on the headnode and both workers.
+#
+#   docker compose -f docker-compose.yml -f <this file> up -d
+#
+# Paths are absolute because compose resolves relative paths against the
+# project directory, not against this file.
+services:
+  slurm-headnode:
+    volumes:
+      - /home/ubuntu/workspace/prolog-epilog:/opt/sqed:ro
+      - /home/ubuntu/workspace/prolog-epilog/tests/integration/qpu-token.conf:/etc/sqed/qpu-token.conf:ro
+      - /home/ubuntu/workspace/prolog-epilog/tests/integration/qpu-token.public:/etc/sqed/qpu-token.public:ro
+  slurm-worker1:
+    volumes:
+      - /home/ubuntu/workspace/prolog-epilog:/opt/sqed:ro
+      - /home/ubuntu/workspace/prolog-epilog/tests/integration/qpu-token.conf:/etc/sqed/qpu-token.conf:ro
+      - /home/ubuntu/workspace/prolog-epilog/tests/integration/qpu-token.public:/etc/sqed/qpu-token.public:ro
+  slurm-worker2:
+    volumes:
+      - /home/ubuntu/workspace/prolog-epilog:/opt/sqed:ro
+      - /home/ubuntu/workspace/prolog-epilog/tests/integration/qpu-token.conf:/etc/sqed/qpu-token.conf:ro
+      - /home/ubuntu/workspace/prolog-epilog/tests/integration/qpu-token.public:/etc/sqed/qpu-token.public:ro

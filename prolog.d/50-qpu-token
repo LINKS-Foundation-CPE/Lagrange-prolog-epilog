@@ -1,0 +1,97 @@
+#!/bin/bash
+# Sqed QPU token — SLURM Prolog (runs as root on every allocated node).
+#
+# For a job holding the QPU license, the first node of the allocation publishes
+# the token record the QC Gateway authenticates against, accounts the licenses
+# the job now holds, and drops the token where the job's tasks can read it.
+#
+# Install as a drop-in: slurm.conf `Prolog=/etc/slurm/prolog.d/*`.
+#
+# This script NEVER exits non-zero. A failing Prolog drains the node, which is
+# far worse than a job with no QPU access — and a job with no QPU access fails
+# by itself at first step launch, because TaskProlog will find no token file.
+
+set -u
+
+QPU_LIBDIR="${QPU_LIBDIR:-/opt/sqed/lib}"
+# shellcheck source=../lib/qpu-token-common.sh
+. "$QPU_LIBDIR/qpu-token-common.sh" 2>/dev/null || exit 0
+
+main() {
+	local n_licenses token digest now expires ttl record
+
+	# The config supplies LICENSE_NAME, so it has to be read before the gate can
+	# be applied. Sourcing a small local file is a shell builtin — for the
+	# classical jobs that make up the bulk of the cluster this script costs that
+	# read and nothing else: no fork, no network.
+	qpu_load_conf || return 0
+
+	n_licenses=$(qpu_license_count) || return 0
+
+	[ -n "${SLURM_JOB_ID:-}" ] || {
+		qpu_warn "no SLURM_JOB_ID in the prolog environment"
+		return 0
+	}
+
+	now=$(date +%s)
+	ttl=$((MAX_WALLTIME_SECONDS + GRACE_SECONDS))
+	expires=$((now + ttl))
+
+	if qpu_is_first_node; then
+		token=$(qpu_mint_token) || {
+			qpu_warn "job ${SLURM_JOB_ID}: cannot mint a token"
+			return 0
+		}
+		# Redis holds the digest, never the token (see qpu_token_digest). The
+		# token itself reaches only the job, through the token file.
+		digest=$(qpu_token_digest "$token") || {
+			qpu_warn "job ${SLURM_JOB_ID}: cannot hash the token (is sha256sum installed?)"
+			return 0
+		}
+
+		# The gateway reads this hash, keyed by the token's digest: one field per
+		# job id, each a JSON record.
+		# `account` is the SLURM project and the billing entity; `uid` is audit
+		# data. Field names are the SqedAuthPlugin contract — do not rename.
+		if [ -z "${SLURM_JOB_ACCOUNT:-}" ]; then
+			qpu_warn "job ${SLURM_JOB_ID}: no SLURM_JOB_ACCOUNT — the record will carry no billing account (is ${SLURM_JOB_USER:-the user} associated with an account in slurmdbd?)"
+		fi
+
+		record=$(printf '{"uid":%s,"username":"%s","account":"%s","n_licenses":%s,"issued_at":%s,"expires_at":%s}' \
+			"${SLURM_JOB_UID:-0}" "${SLURM_JOB_USER:-unknown}" \
+			"${SLURM_JOB_ACCOUNT:-}" "$n_licenses" "$now" "$expires")
+
+		# One pipeline, one connection, under one timeout. The license hold is
+		# an EVAL so that the marker check and the counter update are atomic and
+		# exactly-once: a re-run prolog cannot double-count.
+		if ! printf '%s\n' \
+			"$(printf 'HSET\tqpu:token:%s\t%s\t%s' "$digest" "$SLURM_JOB_ID" "$record")" \
+			"$(printf 'HPEXPIRE\tqpu:token:%s\t%s\tFIELDS\t1\t%s' "$digest" "$((ttl * 1000))" "$SLURM_JOB_ID")" \
+			"$(printf 'SET\tqpu:job:%s\t%s\tEX\t%s' "$SLURM_JOB_ID" "$digest" "$ttl")" \
+			"$(printf 'EVAL\t%s\t2\tlicenses:hpc:%s\tlicenses:in_use\t%s\t%s' \
+				'if redis.call("SET", KEYS[1], ARGV[1], "NX", "EX", ARGV[2]) then return redis.call("INCRBY", KEYS[2], ARGV[1]) else return -1 end' \
+				"$SLURM_JOB_ID" "$n_licenses" "$ttl")" |
+			qpu_redis_run >/dev/null 2>&1; then
+			# No record means no access. Deliberately leave no token file: the
+			# job then fails at first step launch instead of running to
+			# completion collecting 401s.
+			qpu_warn "job ${SLURM_JOB_ID}: publishing the token record failed, job will fail at step launch"
+			return 0
+		fi
+
+		qpu_write_token_file "$token" ||
+			qpu_warn "job ${SLURM_JOB_ID}: cannot write ${TOKEN_DIR}/${SLURM_JOB_ID}"
+		qpu_share_token "$token" ||
+			qpu_warn "job ${SLURM_JOB_ID}: cannot write the shared token copy"
+		qpu_log "job ${SLURM_JOB_ID} (${SLURM_JOB_USER:-?}, account ${SLURM_JOB_ACCOUNT:-?}): ${n_licenses} license(s), ttl ${ttl}s"
+	fi
+
+	# Secondary nodes do nothing. They cannot read the first node's shared copy
+	# here without racing it — prologs run concurrently across the allocation —
+	# so the copy is picked up by TaskProlog instead, which SLURM does not run
+	# until the prolog has completed on every node.
+	return 0
+}
+
+main || true
+exit 0

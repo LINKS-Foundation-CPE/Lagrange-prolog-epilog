@@ -1,0 +1,81 @@
+#!/bin/sh
+# Sqed QPU token — SLURM TaskProlog (runs as the JOB USER, once per task).
+#
+# The only hook that runs in the task's own context, so it is where the token
+# becomes an environment variable. slurmd reads this script's stdout and
+# interprets `export NAME=value` lines, so:
+#
+#   - print nothing else that matters: any line that is not export/unset/print is
+#     silently dropped, INCLUDING anything written to stderr, because slurmd puts
+#     stdout and stderr on the same pipe and parses the lot. `print <text>` is the
+#     only way to say something to the user;
+#   - never quote the value — the value is everything after `=` to end of line,
+#     taken literally, so `export T="x"` would set T to the string "x" WITH the
+#     quotes;
+#   - never block. There is no timeout on TaskProlog (max_wait = -1 in
+#     slurmstepd), so a script that hangs hangs task launch with nothing to
+#     rescue it. This reads one local file and nothing else: no network, no
+#     Redis, no credentials.
+#
+# Exiting non-zero makes slurmstepd _exit() the task before exec, which is the
+# fail-fast path: a job whose token was never published dies at first step
+# launch instead of running to completion collecting 401s.
+#
+# Install: slurm.conf `TaskProlog=/opt/sqed/taskprolog/qpu-token`. TaskProlog
+# takes a single pathname (no glob, unlike Prolog/Epilog), so a site that
+# already has one should call this from it:
+#
+#   /opt/sqed/taskprolog/qpu-token || exit $?
+
+set -u
+
+# The main config is root-only by design — it holds the Redis credentials — and
+# this script runs as the job user, so it cannot read it. The two values it does
+# need are not secret, so they live in a companion world-readable file. Without
+# that file the defaults below apply, which is all a deployment that keeps
+# LICENSE_NAME=qpu and TOKEN_DIR=/run/qpu needs.
+QPU_PUBLIC_CONF="${QPU_PUBLIC_CONF:-/etc/sqed/qpu-token.public}"
+if [ -r "$QPU_PUBLIC_CONF" ]; then
+	# shellcheck disable=SC1090
+	. "$QPU_PUBLIC_CONF"
+fi
+
+LICENSE_NAME="${LICENSE_NAME:-qpu}"
+TOKEN_DIR="${TOKEN_DIR:-/run/qpu}"
+SHARED_TOKEN_DIR="${SHARED_TOKEN_DIR:-}"
+
+# Classical job: pass through untouched.
+case ",${SLURM_JOB_LICENSES:-}," in
+*",${LICENSE_NAME}:"* | *",${LICENSE_NAME},"* | *",${LICENSE_NAME}@"*) ;;
+*) exit 0 ;;
+esac
+
+# The node-local file first; then, on a multi-node job, the copy the first node
+# left on the shared filesystem. Reading it HERE and not in the prolog is what
+# makes multi-node work: prologs run concurrently on every allocated node, so a
+# secondary node's prolog can lose the race to the first node's write, whereas
+# steps are not launched until the prolog has completed everywhere.
+TOKEN_FILE="${TOKEN_DIR}/${SLURM_JOB_ID}"
+if [ ! -r "$TOKEN_FILE" ] && [ -n "$SHARED_TOKEN_DIR" ]; then
+	TOKEN_FILE="${SHARED_TOKEN_DIR}/${SLURM_JOB_ID}"
+fi
+
+if [ ! -r "$TOKEN_FILE" ]; then
+	# `print` is the only way to reach the user. slurmd runs this script with
+	# stdout AND stderr on one pipe (run_command dup2s both) and then parses the
+	# result, discarding every line that is not export/unset/print — so anything
+	# written to stderr is silently swallowed, and all the user would otherwise
+	# see is slurmd's own "TaskProlog failed status=1".
+	echo "print qpu-token: no QPU access token for job ${SLURM_JOB_ID} on $(hostname -s)."
+	echo "print qpu-token: the quantum part of this job cannot authenticate, so the job is"
+	echo "print qpu-token: failing now rather than at first circuit submission."
+	echo "print qpu-token: if this job spans several nodes, submit circuits from the first"
+	echo "print qpu-token: node of the allocation, or ask the operators about SHARED_TOKEN_DIR."
+	exit 1
+fi
+
+TOKEN=$(cat "$TOKEN_FILE") || exit 1
+[ -n "$TOKEN" ] || exit 1
+
+echo "export IQM_TOKEN=$TOKEN"
+exit 0

@@ -1,0 +1,120 @@
+#!/bin/bash
+# Minimal Redis client, so the cluster needs no redis-cli package installed.
+#
+# Reads commands from stdin, one per line, arguments separated by TABs, and
+# writes one line per reply to stdout. Errors go to stderr and set the exit
+# status; a reply the caller does not care about can simply be ignored.
+#
+#   printf 'GET\tqpu:job:42\n' | qpu-redis
+#
+# Only what the prolog and epilog need is implemented: simple strings,
+# integers, bulk strings (nil prints an empty line), and arrays (consumed,
+# printed as their element count) — HPEXPIRE is the only array reply used and
+# its contents are of no interest.
+#
+# Connection details come from the environment, never from argv, so nothing
+# secret is visible in `ps`:
+#   REDIS_HOST (required)  REDIS_PORT (6379)  REDIS_TIMEOUT (2, seconds)
+#   REDIS_AUTH_USER  REDIS_AUTH_PASS (both optional)
+#
+# There is no connect timeout on bash's /dev/tcp, so callers MUST wrap this in
+# `timeout` — see qpu_redis_run() in qpu-token-common.sh.
+
+set -u
+
+: "${REDIS_PORT:=6379}"
+: "${REDIS_TIMEOUT:=2}"
+
+if [ -z "${REDIS_HOST:-}" ]; then
+	echo "qpu-redis: REDIS_HOST is not set" >&2
+	exit 2
+fi
+
+exec 3<>"/dev/tcp/${REDIS_HOST}/${REDIS_PORT}" || {
+	echo "qpu-redis: cannot connect to ${REDIS_HOST}:${REDIS_PORT}" >&2
+	exit 1
+}
+
+send() {
+	local out arg
+	out=$'*'"$#"$'\r\n'
+	for arg in "$@"; do
+		out+=$'$'"${#arg}"$'\r\n'"${arg}"$'\r\n'
+	done
+	printf '%s' "$out" >&3
+}
+
+# Reads one reply. Prints its payload; returns 1 on a Redis error or a
+# protocol/timeout failure.
+read_reply() {
+	local line type rest len data i
+	IFS= read -r -t "$REDIS_TIMEOUT" -u 3 line || {
+		echo "qpu-redis: timed out waiting for a reply" >&2
+		return 1
+	}
+	line=${line%$'\r'}
+	type=${line:0:1}
+	rest=${line:1}
+
+	case $type in
+	'+' | ':')
+		printf '%s\n' "$rest"
+		;;
+	'-')
+		echo "qpu-redis: $rest" >&2
+		printf '\n'
+		return 1
+		;;
+	'$')
+		len=$rest
+		if [ "$len" = "-1" ]; then
+			printf '\n' # nil, e.g. SET NX that did not win
+			return 0
+		fi
+		data=""
+		if [ "$len" -gt 0 ]; then
+			IFS= read -r -N "$len" -t "$REDIS_TIMEOUT" -u 3 data || return 1
+		fi
+		# Consume the trailing CRLF into REPLY, which is discarded.
+		IFS= read -r -N 2 -t "$REDIS_TIMEOUT" -u 3 || return 1
+		printf '%s\n' "$data"
+		;;
+	'*')
+		len=$rest
+		if [ "$len" = "-1" ] || [ "$len" = "0" ]; then
+			printf '0\n'
+			return 0
+		fi
+		# Consume the elements without interpreting them. Nested arrays are
+		# not used by this project and are not handled.
+		for ((i = 0; i < len; i++)); do
+			read_reply >/dev/null || return 1
+		done
+		printf '%s\n' "$len"
+		;;
+	*)
+		echo "qpu-redis: unexpected reply '$line'" >&2
+		return 1
+		;;
+	esac
+}
+
+rc=0
+
+if [ -n "${REDIS_AUTH_PASS:-}" ]; then
+	if [ -n "${REDIS_AUTH_USER:-}" ]; then
+		send AUTH "$REDIS_AUTH_USER" "$REDIS_AUTH_PASS"
+	else
+		send AUTH "$REDIS_AUTH_PASS"
+	fi
+	read_reply >/dev/null || exit 1
+fi
+
+while IFS=$'\t' read -r -a argv; do
+	[ ${#argv[@]} -gt 0 ] || continue
+	send "${argv[@]}"
+	read_reply || rc=1
+done
+
+exec 3<&-
+exit $rc

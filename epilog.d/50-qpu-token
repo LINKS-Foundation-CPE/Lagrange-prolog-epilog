@@ -1,0 +1,58 @@
+#!/bin/bash
+# Sqed QPU token — SLURM Epilog (runs as root on every allocated node).
+#
+# Invalidates the token and gives back the licenses this job held. Install as a
+# drop-in: slurm.conf `Epilog=/etc/slurm/epilog.d/*`.
+#
+# Like the prolog, this NEVER exits non-zero: a failing Epilog drains the node.
+# Everything it does is best effort, because the record's TTL is the backstop —
+# a missed cleanup expires on its own.
+
+set -u
+
+QPU_LIBDIR="${QPU_LIBDIR:-/opt/sqed/lib}"
+# shellcheck source=../lib/qpu-token-common.sh
+. "$QPU_LIBDIR/qpu-token-common.sh" 2>/dev/null || exit 0
+
+main() {
+	local token digest=""
+
+	qpu_load_conf || return 0
+	qpu_license_count >/dev/null || return 0
+	[ -n "${SLURM_JOB_ID:-}" ] || return 0
+
+	if qpu_is_first_node; then
+		# The record is keyed by the token's digest. Hash the token from the
+		# local file; the reverse map, which holds the digest, is the fallback
+		# for a node whose file was already cleaned up.
+		token=$(qpu_read_token_file) || token=""
+		if [ -n "$token" ]; then
+			digest=$(qpu_token_digest "$token") || digest=""
+		fi
+		if [ -z "$digest" ]; then
+			digest=$(printf 'GET\tqpu:job:%s\n' "$SLURM_JOB_ID" | qpu_redis_run 2>/dev/null | head -1) || digest=""
+		fi
+
+		# Release the licenses whatever happens to the token lookup: GETDEL of
+		# the marker returns the exact amount this job took, so the counter
+		# cannot drift, and a re-run epilog is a no-op.
+		{
+			if [ -n "$digest" ]; then
+				printf 'HDEL\tqpu:token:%s\t%s\n' "$digest" "$SLURM_JOB_ID"
+				printf 'DEL\tqpu:job:%s\n' "$SLURM_JOB_ID"
+			fi
+			printf 'EVAL\t%s\t2\tlicenses:hpc:%s\tlicenses:in_use\n' \
+				'local n = redis.call("GETDEL", KEYS[1]) if n then return redis.call("DECRBY", KEYS[2], n) else return -1 end' \
+				"$SLURM_JOB_ID"
+		} | qpu_redis_run >/dev/null 2>&1 ||
+			qpu_warn "job ${SLURM_JOB_ID}: cleanup in Redis failed, the record TTL will expire it"
+
+		qpu_remove_shared_token
+	fi
+
+	qpu_remove_token_file
+	return 0
+}
+
+main || true
+exit 0

@@ -1,0 +1,56 @@
+# Sqed QPU token scripts — configuration.
+#
+# Install as /etc/sqed/qpu-token.conf, owned by root, mode 0600: it holds the
+# Redis credentials, and it is read only by the Prolog and Epilog, both of which
+# run as root. TaskProlog runs as the job user and deliberately does not read
+# this file.
+#
+# Sourced by bash, so this is shell syntax. Quote anything with spaces.
+
+# ── Redis: the bus the QC Gateway reads ──────────────────────────────────────
+# Only the first node of an allocation talks to Redis, once at job start and
+# once at job end. Nothing else on the cluster needs to reach it.
+REDIS_HOST=redis.example.org
+REDIS_PORT=6379
+
+# Optional ACL credentials. Give this user the narrowest grant that works:
+# write on qpu:* and licenses:hpc:*, read-write on licenses:in_use, and EVAL.
+#REDIS_AUTH_USER=sqed-prolog
+#REDIS_AUTH_PASS=
+
+# Hard ceiling on the whole Redis interaction, in seconds. A prolog must finish
+# inside slurm.conf's MessageTimeout (default 10s) or job launch is at risk, so
+# keep this small: it is better to fail a quantum job fast than to slow every
+# job start on the cluster.
+REDIS_TIMEOUT=2
+
+# ── Licensing ────────────────────────────────────────────────────────────────
+# The SLURM license name that means "this job wants the QPU". Everything in
+# these scripts is inert for a job that does not hold it.
+LICENSE_NAME=qpu
+
+# ── Token lifetime ───────────────────────────────────────────────────────────
+# The record expires after MAX_WALLTIME_SECONDS + GRACE_SECONDS, which is the
+# backstop for a missed epilog. Set MAX_WALLTIME_SECONDS to the MaxTime of the
+# partition that carries the QPU license, in seconds — not to a per-job limit.
+MAX_WALLTIME_SECONDS=86400
+GRACE_SECONDS=600
+
+# ── Token delivery ───────────────────────────────────────────────────────────
+# Node-local directory for the per-job token file. MUST be root-owned and on a
+# local filesystem, ideally tmpfs. Do not point this at a world-writable
+# directory such as /tmp or /dev/shm: a user who can create the path first can
+# plant a symlink and have the root prolog write the token where they can read
+# it.
+TOKEN_DIR=/run/qpu
+
+# Multi-node support, off by default. Without it the token exists only on the
+# first node of the allocation, so circuits must be submitted from there — which
+# is where the batch step runs, so single-node and rank-0 workflows are
+# unaffected. Set this to a root-owned directory on a shared filesystem to let
+# every node of a job authenticate. The file is written 0600 owned by the job
+# user and removed by the epilog.
+#SHARED_TOKEN_DIR=/gpfs/sqed/tokens
+
+# Prefix the QC Gateway routes on. Must match the gateway's SQED_TOKEN_PREFIX.
+TOKEN_PREFIX=sqed_

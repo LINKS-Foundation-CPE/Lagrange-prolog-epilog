@@ -1,0 +1,3 @@
+LICENSE_NAME=qpu
+TOKEN_DIR=/run/qpu
+SHARED_TOKEN_DIR=/shared/sqed-tokens

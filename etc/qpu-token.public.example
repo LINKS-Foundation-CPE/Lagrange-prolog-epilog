@@ -1,0 +1,19 @@
+# Sqed QPU token scripts — the non-secret half of the configuration.
+#
+# Install as /etc/sqed/qpu-token.public, root-owned, mode 0644.
+#
+# TaskProlog runs as the job user, so it cannot read the main config (which is
+# root-only because it holds the Redis credentials). It needs two values from
+# it, neither of them secret, so they are repeated here. Keep them in step with
+# /etc/sqed/qpu-token.conf — if they drift, TaskProlog will look for the token
+# in the wrong place and every quantum job will fail at step launch.
+#
+# This file is unnecessary if the deployment keeps both defaults
+# (LICENSE_NAME=qpu, TOKEN_DIR=/run/qpu).
+
+LICENSE_NAME=qpu
+TOKEN_DIR=/run/qpu
+
+# Only if the deployment sets it in the main config: TaskProlog is what reads the
+# shared copy on a secondary node, so it needs the path too.
+#SHARED_TOKEN_DIR=/gpfs/sqed/tokens
