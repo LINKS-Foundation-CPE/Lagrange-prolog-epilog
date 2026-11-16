@@ -212,6 +212,22 @@ old layout is not found by the new gateway, and the reverse is also true.
   components, so only the leader should publish a record; these scripts rely on
   that behaviour, but it has not been tested here), and `salloc` interactive sessions.
 
+## Citation
+
+If you use these scripts in your research, please cite the Lagrange paper:
+
+```bibtex
+@misc{viviani2026lagrangeoperatingitalyspubliclyaccessible,
+      title={Lagrange: Operating Italy's First Publicly-Accessible Quantum Computer for Research and Education},
+      author={Paolo Viviani and Fabrizio Bertone and Giacomo Vitali and Emanuele Dri and Federico Stirano and Giuseppe Caragnano and Francesco Lubrano and Marco Cipollini and Martina Giovalli and Chiara Vercellino and Alberto Scionti and Virginia Ajani and Antonino Nespola and Olivier Terzo and Matteo Cocuzza and Bartolomeo Montrucchio and Giovanna Turvani and Gianluca Bertaina and Marco Coisson and Davide Calonico and Fabrizio Pirri and Pietro Asinari},
+      year={2026},
+      eprint={2604.21695},
+      archivePrefix={arXiv},
+      primaryClass={quant-ph},
+      url={https://arxiv.org/abs/2604.21695},
+}
+```
+
 ## Licence
 
 EUPL-1.2. See [LICENSE](LICENSE).
