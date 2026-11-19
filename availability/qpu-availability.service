@@ -1,0 +1,12 @@
+[Unit]
+Description=Hold the SLURM qpu license while the quantum computer or its gateway is unhealthy
+Documentation=https://github.com/LINKS-Foundation-CPE/Lagrange-prolog-epilog
+After=network-online.target slurmdbd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# An account sacctmgr lets update resources (an operator, or SlurmUser).
+User=slurm
+ExecStart=/opt/sqed/availability/qpu-availability
+StateDirectory=sqed

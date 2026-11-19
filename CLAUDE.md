@@ -16,6 +16,11 @@ pair; no repository is branded with it. Anything else that writes the same
 records (a SPANK plugin, say) must not run alongside these scripts: two
 provisioners racing on the same keys is not a supported configuration.
 
+`availability/qpu-availability` is not a hook: it runs from a timer on the
+slurmdbd or controller host and holds the license while the QPU or the gateway
+is unhealthy. It may use `curl` and `sacctmgr`; the no-dependency rule below is
+about the hooks, which run on every node for every job.
+
 [README.md](README.md) is the reference for what each hook does, the Redis
 contract, installation and the test suite. It is current; do not restate it here.
 
@@ -52,7 +57,7 @@ contract, installation and the test suite. It is current; do not restate it here
 
 ```sh
 ./tests/lint.sh   # shellcheck, in Docker
-./tests/run.sh    # 58 cases against a real Redis 7.4+, in Docker. No SLURM needed.
+./tests/run.sh    # 58 cases against a real Redis 7.4+, then 22 for qpu-availability. No SLURM needed.
 ```
 
 Both must pass. The suite drives the scripts the way SLURM does — environment

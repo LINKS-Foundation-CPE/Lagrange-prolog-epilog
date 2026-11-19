@@ -9,6 +9,18 @@ fix-only follow-ups within that month.
 
 ## [Unreleased]
 
+### Added
+- **`availability/qpu-availability`**: holds the `qpu` license while the QPU or
+  the QC Gateway is unhealthy. Run from a systemd timer (units included), it
+  checks the gateway's `/health` and the machine's health through the gateway,
+  and after 3 failed checks sets the remote license's `lastconsumed` to its
+  count, so SLURM starts no licensed job and waiting jobs hold no nodes. After
+  2 good checks it gives the seats back. 22 test cases (`tests/availability.sh`).
+- README: **keeping SLURM in step with the QPU**. Planned calibration is
+  handled by a license-only SLURM reservation, which the scheduler plans around
+  with `bf_licenses`; outages by the script above. Both verified on Slurm
+  23.11.10.
+
 ## [2026.11.0] — 2026-11-10
 
 First public release.

@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# qpu-availability — hold the QPU license while the QPU or the gateway is down.
+#
+# SLURM cannot tell that the quantum computer is unavailable: the qpu license
+# says "free", jobs start, and then wait on their allocations for a machine
+# that is not answering. This script checks the QC Gateway's health and the
+# machine's (through the gateway), and while they fail it marks every seat of
+# the remote qpu license as consumed outside SLURM (sacctmgr ... set
+# lastconsumed). SLURM then starts no new licensed job: they stay pending,
+# Reason=Licenses, holding no nodes. Running jobs keep their licenses. When the
+# checks pass again, it gives the seats back.
+#
+# One check per run: start it every 30-60 s from a systemd timer (see
+# qpu-availability.timer) or cron, on a host where sacctmgr can update
+# resources (the slurmdbd or controller host, as an operator or SlurmUser).
+# Consecutive failures and successes are counted in a state file, so one
+# missed check neither drains nor restores.
+#
+# It owns the license's lastconsumed: it only restores what it drained, but
+# while it runs nothing else should set lastconsumed on the same license.
+#
+# Planned unavailability (calibration) is better handled by a SLURM
+# reservation on the licenses, which the scheduler plans around: see README.md.
+#
+#   qpu-availability [--dry-run]
+#
+# Exit status: 0 when the license is in the state the checks call for, 1 when
+# it could not be read or updated, 2 on a configuration error.
+
+set -uo pipefail
+
+CONF=${QPU_AVAILABILITY_CONF:-/etc/sqed/qpu-availability.conf}
+if [ -r "$CONF" ]; then
+	# shellcheck source=/dev/null
+	. "$CONF"
+fi
+
+: "${GATEWAY_HEALTH_URL:=}"
+: "${MACHINE_HEALTH_URL:=}"
+: "${CA_BUNDLE:=}"
+: "${LICENSE_NAME:=qpu}"
+: "${LICENSE_SERVER:=qc_gateway}"
+: "${FAIL_THRESHOLD:=3}"
+: "${OK_THRESHOLD:=2}"
+: "${CURL_TIMEOUT:=10}"
+: "${STATE_DIR:=/var/lib/sqed}"
+: "${CURL:=curl}"
+: "${SACCTMGR:=sacctmgr}"
+DRY_RUN=0
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+
+log() { printf 'qpu-availability: %s\n' "$*"; }
+die() { log "$1"; exit "${2:-1}"; }
+
+[ -n "$GATEWAY_HEALTH_URL" ] || die "GATEWAY_HEALTH_URL is not set (in $CONF)" 2
+case "$FAIL_THRESHOLD$OK_THRESHOLD" in *[!0-9]*) die "FAIL_THRESHOLD and OK_THRESHOLD must be integers" 2 ;; esac
+
+STATE=$STATE_DIR/qpu-availability.$LICENSE_NAME@$LICENSE_SERVER.state
+
+# probe <url> <require-healthy-json>: 0 if healthy. The reason goes to stdout.
+probe() {
+	local url=$1 json=$2 out code body
+	local args=(-sS -m "$CURL_TIMEOUT" -w '\n%{http_code}')
+	[ -n "$CA_BUNDLE" ] && args+=(--cacert "$CA_BUNDLE")
+	if ! out=$("$CURL" "${args[@]}" "$url" 2>&1); then
+		printf '%s unreachable (%s)' "$url" "$(printf '%s' "$out" | head -n 1)"
+		return 1
+	fi
+	code=${out##*$'\n'}
+	body=${out%$'\n'*}
+	if [ "$code" != 200 ]; then
+		printf '%s answered %s' "$url" "$code"
+		return 1
+	fi
+	# The machine's health is {"healthy": true, ...}: a 200 alone is not enough.
+	if [ "$json" = 1 ] && ! printf '%s' "$body" | grep -Eq '"healthy"[[:space:]]*:[[:space:]]*true'; then
+		printf '%s reports not healthy: %s' "$url" "$(printf '%s' "$body" | head -c 200)"
+		return 1
+	fi
+	return 0
+}
+
+fails=0 oks=0 drained=0
+if [ -r "$STATE" ]; then
+	# shellcheck source=/dev/null
+	. "$STATE"
+fi
+
+healthy=1 reason=""
+if ! reason=$(probe "$GATEWAY_HEALTH_URL" 0); then
+	healthy=0
+elif [ -n "$MACHINE_HEALTH_URL" ] && ! reason=$(probe "$MACHINE_HEALTH_URL" 1); then
+	healthy=0
+fi
+if [ "$healthy" = 1 ]; then
+	oks=$((oks + 1)) fails=0
+else
+	fails=$((fails + 1)) oks=0
+	log "check failed ($fails/$FAIL_THRESHOLD): $reason"
+fi
+
+# The license as slurmdbd has it: "count|lastconsumed".
+row=$("$SACCTMGR" -n -P show resource name="$LICENSE_NAME" server="$LICENSE_SERVER" format=count,lastconsumed 2>&1) ||
+	die "cannot read license $LICENSE_NAME@$LICENSE_SERVER: $row"
+row=$(printf '%s\n' "$row" | head -n 1)
+count=${row%%|*} consumed=${row#*|}
+case "$count$consumed" in '' | *[!0-9]*) die "unexpected sacctmgr output for $LICENSE_NAME@$LICENSE_SERVER: '$row'" ;; esac
+
+set_consumed() { # set_consumed <n> <why>
+	if [ "$DRY_RUN" = 1 ]; then
+		log "dry run: would set lastconsumed=$1 on $LICENSE_NAME@$LICENSE_SERVER ($2)"
+		return 0
+	fi
+	local out
+	if ! out=$("$SACCTMGR" -i update resource name="$LICENSE_NAME" server="$LICENSE_SERVER" set lastconsumed="$1" 2>&1); then
+		log "cannot update $LICENSE_NAME@$LICENSE_SERVER: $out"
+		return 1
+	fi
+	log "lastconsumed=$1 on $LICENSE_NAME@$LICENSE_SERVER ($2)"
+}
+
+rc=0
+# Only a change that took effect changes `drained`: a failed update is retried
+# on the next run.
+if [ "$fails" -ge "$FAIL_THRESHOLD" ] && [ "$consumed" != "$count" ]; then
+	if set_consumed "$count" "drained: $reason"; then drained=1; else rc=1; fi
+elif [ "$oks" -ge "$OK_THRESHOLD" ] && [ "$drained" = 1 ]; then
+	if set_consumed 0 "restored: checks pass again"; then drained=0; else rc=1; fi
+fi
+
+if [ "$DRY_RUN" = 0 ]; then
+	mkdir -p "$STATE_DIR" 2>/dev/null
+	if ! { printf 'fails=%s\noks=%s\ndrained=%s\n' "$fails" "$oks" "$drained" >"$STATE.tmp" &&
+		mv "$STATE.tmp" "$STATE"; }; then
+		log "cannot write $STATE"
+	fi
+fi
+exit "$rc"

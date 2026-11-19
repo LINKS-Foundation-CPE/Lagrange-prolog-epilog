@@ -157,10 +157,92 @@ Array elements are separate jobs, so each writes its own field under its own
 token. Heterogeneous jobs hold their licenses on the leader component, which is
 the only one that publishes a record.
 
+## Keeping SLURM in step with the QPU
+
+SLURM only knows what the `qpu` license tells it. Whenever the quantum computer
+is busy with something other than SLURM jobs, or is down, the license still
+reads "free" and SLURM starts jobs that then wait on their allocations. There
+are two such cases, and each has its own tool.
+
+### Calibration: a reservation on the licenses
+
+Calibration runs on the machine as a job. It does not stop submissions, but
+while it runs every job's circuits wait behind it, a delay the vQPUs do not
+account for. Calibration windows are known in advance, so reserve the vQPUs for
+them, with a reservation that holds the licenses and no nodes:
+
+```sh
+scontrol create reservation ReservationName=qpu-calibration \
+    StartTime=2026-11-19T06:00:00 Duration=01:00:00 \
+    Licenses=qpu@qc_gateway:4 Users=root Flags=LICENSE_ONLY
+```
+
+Reserve every seat (`Licenses=` = the license's `Count`), and allow only an
+account that submits nothing (`Users=root`). Then:
+
+- no licensed job runs during the window: one submitted then waits
+  (`Reason=Licenses`) without holding nodes;
+- with `SchedulerParameters=bf_licenses`, the scheduler also does not start a
+  licensed job whose time limit would carry it into the window, so no job is
+  caught waiting on a calibration. Short licensed jobs that end before the
+  window, and jobs without the license, run as usual;
+- when the window ends, the waiting jobs start.
+
+For a recurring calibration, add `DAILY` or `WEEKLY` to `Flags=`
+(`Flags=LICENSE_ONLY,DAILY`). Size the window to the calibration's real
+duration plus a margin: a calibration that overruns delays the jobs that start
+right after the window, which is the cost this reservation exists to avoid.
+
+Verified on Slurm 23.11.10 (`LICENSE_ONLY` is shown as `ANY_NODES`): the
+reservation held all four licenses; a licensed job with a 10-minute limit
+submitted before the window waited, while a 1-minute licensed job and a
+classical job ran; a job submitted during the window waited; both started when
+it ended.
+
+### Outages: `availability/qpu-availability`
+
+For what is not planned, the QPU or the gateway being down, a small script
+holds the license for as long as the health checks fail. Run it every minute
+from a systemd timer on a host where `sacctmgr` can update resources (the
+slurmdbd or controller host):
+
+| Check | Healthy when |
+|---|---|
+| `GATEWAY_HEALTH_URL`, the gateway's `/health` | HTTP 200 |
+| `MACHINE_HEALTH_URL`, the machine's health through the gateway (`/api/v1/quantum-computers/default/health`) | HTTP 200 and `"healthy": true` |
+
+After `FAIL_THRESHOLD` consecutive failed checks (default 3) it sets the remote
+license's `lastconsumed` to its count: every seat is in use outside SLURM, so
+no new licensed job starts, and waiting jobs hold no nodes. Running jobs keep
+their licenses. After `OK_THRESHOLD` consecutive good checks (default 2) it sets
+`lastconsumed` back to 0. It only restores what it drained itself, and it owns
+the license's `lastconsumed`: nothing else should set it while the script runs.
+
+```sh
+install -d -m 0755 /opt/sqed/availability
+install -m 0755 availability/qpu-availability /opt/sqed/availability/
+install -m 0644 availability/qpu-availability.conf.example /etc/sqed/qpu-availability.conf
+install -m 0644 availability/qpu-availability.{service,timer} /etc/systemd/system/
+# the unit runs as SlurmUser, which must be allowed to update resources in
+# slurmdbd (operator level should do; the test above ran as root):
+sacctmgr modify user slurm set adminlevel=operator
+systemctl enable --now qpu-availability.timer
+```
+
+Edit the two URLs in `/etc/sqed/qpu-availability.conf`. Run
+`qpu-availability --dry-run` to see what it would do, and
+`journalctl -u qpu-availability` for what it did. The machine check goes
+through the gateway, which adds its service credentials, so the script holds
+no token.
+
+Verified on Slurm 23.11.10: with the machine reporting `"healthy": false`, the
+third check set `lastconsumed=4`, `scontrol show lic` reported `Free=0`, and a
+licensed job waited with `Reason=Licenses`; two good checks restored `Free=4`.
+
 ## Tests
 
 ```sh
-./tests/run.sh    # 58 cases against a real Redis, in Docker. No SLURM needed.
+./tests/run.sh    # 58 cases against a real Redis, then 22 for qpu-availability, in Docker. No SLURM needed.
 ./tests/lint.sh   # shellcheck
 ```
 

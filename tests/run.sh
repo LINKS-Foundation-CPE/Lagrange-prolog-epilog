@@ -36,4 +36,4 @@ docker run --rm --network "$NET" \
 	-e REPO=/repo \
 	-e REDIS_HOST="$REDIS" \
 	"$TEST_IMAGE" \
-	bash /repo/tests/cases.sh
+	bash -c 'bash /repo/tests/cases.sh && apt-get -qq update >/dev/null && apt-get -qq install -y curl >/dev/null && bash /repo/tests/availability.sh'

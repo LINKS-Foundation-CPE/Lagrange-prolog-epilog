@@ -1,0 +1,26 @@
+# qpu-availability configuration. Install as /etc/sqed/qpu-availability.conf
+# (root-owned, 0644: nothing secret). Sourced by bash.
+
+# The QC Gateway's own health, and the machine's health through the gateway
+# (which adds its service credentials, so no token is needed here). The license
+# is drained when either fails; the machine check also requires
+# {"healthy": true} in the answer.
+GATEWAY_HEALTH_URL=https://gateway.example.org/health
+MACHINE_HEALTH_URL=https://gateway.example.org/api/v1/quantum-computers/default/health
+
+# CA bundle for the gateway's certificate, if the system store does not trust it.
+#CA_BUNDLE=/etc/sqed/gateway-ca.crt
+
+# The remote license jobs request (--licenses=qpu@qc_gateway:N).
+LICENSE_NAME=qpu
+LICENSE_SERVER=qc_gateway
+
+# Consecutive failed checks before draining, consecutive good ones before
+# restoring. With a 60 s timer: drained after about 3 minutes of outage,
+# restored after about 2 minutes of health.
+FAIL_THRESHOLD=3
+OK_THRESHOLD=2
+CURL_TIMEOUT=10
+
+# Where the counters between runs are kept.
+STATE_DIR=/var/lib/sqed

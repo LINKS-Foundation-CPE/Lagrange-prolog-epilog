@@ -15,5 +15,7 @@ docker run --rm -v "$REPO":/mnt:ro -w /mnt "${SHELLCHECK_IMAGE:-koalaman/shellch
 	epilog.d/50-qpu-token \
 	taskprolog/qpu-token \
 	tests/run.sh \
-	tests/cases.sh
+	tests/cases.sh \
+	tests/availability.sh \
+	availability/qpu-availability
 echo "shellcheck: clean"
