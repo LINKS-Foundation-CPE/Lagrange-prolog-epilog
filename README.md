@@ -294,6 +294,11 @@ old layout is not found by the new gateway, and the reverse is also true.
   components, so only the leader should publish a record; these scripts rely on
   that behaviour, but it has not been tested here), and `salloc` interactive sessions.
 
+## Acknowledgements
+
+The SLURM integration has been partially supported by the ICSC Cascade grant
+[SmartHPC-QC](https://www.supercomputing-icsc.it/smart-hpc-qc-middleware-per-un-uso-intelligente-delle-risorse-computazionali/).
+
 ## Citation
 
 If you use these scripts in your research, please cite the Lagrange paper:
