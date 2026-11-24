@@ -209,7 +209,7 @@ slurmdbd or controller host):
 | Check | Healthy when |
 |---|---|
 | `GATEWAY_HEALTH_URL`, the gateway's `/health` | HTTP 200 |
-| `MACHINE_HEALTH_URL`, the machine's health through the gateway (`/api/v1/quantum-computers/default/health`) | HTTP 200 and `"healthy": true` |
+| `MACHINE_HEALTH_URL`, the machine's health through the gateway (`/api/v1/quantum-computers/default/health`) | HTTP 200, `"healthy": true` (top level on IQM Server 2.x, inside `"health"` on 3.x), and `operational_status`, when present, `online` |
 
 After `FAIL_THRESHOLD` consecutive failed checks (default 3) it sets the remote
 license's `lastconsumed` to its count: every seat is in use outside SLURM, so
@@ -242,7 +242,7 @@ licensed job waited with `Reason=Licenses`; two good checks restored `Free=4`.
 ## Tests
 
 ```sh
-./tests/run.sh    # 58 cases against a real Redis, then 22 for qpu-availability, in Docker. No SLURM needed.
+./tests/run.sh    # 58 cases against a real Redis, then 27 for qpu-availability, in Docker. No SLURM needed.
 ./tests/lint.sh   # shellcheck
 ```
 

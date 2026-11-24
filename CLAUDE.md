@@ -57,7 +57,7 @@ contract, installation and the test suite. It is current; do not restate it here
 
 ```sh
 ./tests/lint.sh   # shellcheck, in Docker
-./tests/run.sh    # 58 cases against a real Redis 7.4+, then 22 for qpu-availability. No SLURM needed.
+./tests/run.sh    # 58 cases against a real Redis 7.4+, then 27 for qpu-availability. No SLURM needed.
 ```
 
 Both must pass. The suite drives the scripts the way SLURM does — environment

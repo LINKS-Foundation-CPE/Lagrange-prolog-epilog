@@ -72,8 +72,20 @@ probe() {
 		printf '%s answered %s' "$url" "$code"
 		return 1
 	fi
-	# The machine's health is {"healthy": true, ...}: a 200 alone is not enough.
-	if [ "$json" = 1 ] && ! printf '%s' "$body" | grep -Eq '"healthy"[[:space:]]*:[[:space:]]*true'; then
+	[ "$json" = 1 ] || return 0
+	# A 200 alone is not enough: the machine must say it is healthy. IQM Server
+	# 2.x answers {"healthy": true, ...}; 3.x nests the readings,
+	# {"operational_status": "online", "health": {"healthy": true, ...}}, and
+	# leaves "health" out entirely while the machine is in maintenance. The
+	# match below is deliberately not anchored to the top level, so it accepts
+	# both shapes.
+	local status
+	status=$(printf '%s' "$body" | grep -Eo '"operational_status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | sed -E 's/.*"([^"]*)"$/\1/')
+	if [ -n "$status" ] && [ "$status" != online ]; then
+		printf '%s reports operational_status %s' "$url" "$status"
+		return 1
+	fi
+	if ! printf '%s' "$body" | grep -Eq '"healthy"[[:space:]]*:[[:space:]]*true'; then
 		printf '%s reports not healthy: %s' "$url" "$(printf '%s' "$body" | head -c 200)"
 		return 1
 	fi

@@ -4,7 +4,8 @@
 # The QC Gateway's own health, and the machine's health through the gateway
 # (which adds its service credentials, so no token is needed here). The license
 # is drained when either fails; the machine check also requires
-# {"healthy": true} in the answer.
+# "healthy": true in the answer (top level on IQM Server 2.x, inside "health"
+# on 3.x) and, on 3.x, operational_status "online".
 GATEWAY_HEALTH_URL=https://gateway.example.org/health
 MACHINE_HEALTH_URL=https://gateway.example.org/api/v1/quantum-computers/default/health
 

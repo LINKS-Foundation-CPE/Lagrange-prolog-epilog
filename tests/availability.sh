@@ -91,6 +91,27 @@ run >/dev/null; run >/dev/null; run >/dev/null
 is "200 with healthy=false drains" "$(consumed)" 4
 
 reset
+echo '200 {"operational_status":"online","health":{"healthy":true,"updated_at":"2026-11-23T10:00:00Z"},"queue_length":0}' >"$WORK/machine"
+run >/dev/null; run >/dev/null; run >/dev/null
+is "IQM Server 3 shape, online and healthy: not drained" "$(consumed)" 0
+
+reset
+echo '200 {"operational_status":"online","health":{"healthy":false,"updated_at":"2026-11-23T10:00:00Z"}}' >"$WORK/machine"
+run >/dev/null; run >/dev/null; run >/dev/null
+is "IQM Server 3 shape, healthy=false: drained" "$(consumed)" 4
+
+reset
+echo '200 {"operational_status":"maintenance","queue_length":0}' >"$WORK/machine"
+run >/dev/null; run >/dev/null; run >/dev/null
+is "IQM Server 3 maintenance (no health object): drained" "$(consumed)" 4
+logged "the log names the operational status" 'operational_status maintenance'
+
+reset
+echo '200 {"operational_status":"maintenance","health":{"healthy":true}}' >"$WORK/machine"
+run >/dev/null; run >/dev/null; run >/dev/null
+is "a non-online status drains even with healthy=true" "$(consumed)" 4
+
+reset
 echo "down" >"$WORK/gateway"
 run >/dev/null; run >/dev/null; run >/dev/null
 is "an unreachable gateway drains" "$(consumed)" 4
